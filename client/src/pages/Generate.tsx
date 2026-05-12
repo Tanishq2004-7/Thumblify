@@ -29,6 +29,7 @@ const Generate = () => {
     const [styleDropdownOpen, setStyleDropdownOpen] = useState(false);
 
     const handleGenerate = async () => {
+        if (loading) return;
         if (!isLoggedIn) return toast.error('Please login to generate thumbnails');
         if (!title.trim()) return toast.error('Title is required');
         setLoading(true);
@@ -51,6 +52,8 @@ const Generate = () => {
         } catch (error: any) {
             console.log(error);
             toast.error(error?.response?.data?.message || error.message);
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -137,7 +140,7 @@ const Generate = () => {
 
                                 {/* BUTTON */}
                                 {!id && (
-                                    <button onClick={handleGenerate} className='text-[15px] w-full py-3.5 rounded-xl font-medium bg-linear-to-b from-pink-500 to-pink-600 hover:from-pink-700 disabled:cursor-not-allowed transition-colors'>
+                                    <button onClick={handleGenerate} disabled={loading} className='text-[15px] w-full py-3.5 rounded-xl font-medium bg-linear-to-b from-pink-500 to-pink-600 hover:from-pink-700 disabled:cursor-not-allowed transition-colors'>
                                         {loading ? 'Generating...' : 'Generate Thumbnail'}
                                     </button>
                                 )}
