@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import Thumbnail from '../models/Thumbnail.js';
-import { GenerateContentConfig, HarmBlockThreshold, HarmCategory } from '@google/genai';
 import ai from '../configs/ai.js';
 import { v2 as cloudinary } from 'cloudinary';
 
@@ -23,12 +22,20 @@ const colorSchemeDescriptions = {
     pastel: 'soft pastel colors, low saturation, gentle tones, calm and friendly aesthetic',
 };
 
+const getSizeFromAspectRatio = (aspectRatio: string) => {
+    if (aspectRatio === '1:1') return { width: 1024, height: 1024 };
+    if (aspectRatio === '9:16') return { width: 720, height: 1280 };
+    return { width: 1280, height: 720 };
+};
+
 export const generateThumbnail = async (req: Request, res: Response) => {
+    let thumbnail: any = null;
+
     try {
         const { userId } = req.session;
         const { title, prompt: user_prompt, style, aspect_ratio, color_scheme, text_overlay } = req.body;
 
-        const thumbnail = await Thumbnail.create({
+        thumbnail = await Thumbnail.create({
             userId,
             title,
             prompt_used: user_prompt,
@@ -40,81 +47,58 @@ export const generateThumbnail = async (req: Request, res: Response) => {
             isGenerating: true,
         });
 
-        const model = 'gemini-3-pro-image-preview';
-
-        const generationConfig: GenerateContentConfig = {
-            maxOutputTokens: 32768,
-            temperature: 1,
-            topP: 0.95,
-            responseModalities: ['IMAGE'],
-            imageConfig: {
-                aspectRatio: aspect_ratio || '16:9',
-                imageSize: '1K',
-            },
-            safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
-            ],
-        };
-
-        let prompt = `Create a ${stylePrompts[style as keyof typeof stylePrompts]} for: "${title}"`;
+        let prompt = `Create a ${stylePrompts[style as keyof typeof stylePrompts] || stylePrompts['Bold & Graphic']} for: "${title}". `;
 
         if (color_scheme) {
-            prompt += `Use a ${colorSchemeDescriptions[color_scheme as keyof typeof colorSchemeDescriptions]} color scheme.`;
+            prompt += `Use a ${colorSchemeDescriptions[color_scheme as keyof typeof colorSchemeDescriptions] || color_scheme} color scheme. `;
         }
 
         if (user_prompt) {
             prompt += `Additional details: ${user_prompt}. `;
         }
 
-        prompt += `The thumbnail should be ${aspect_ratio}, visually stunning, and designed to maximize click-through rate. Make it bold, professional, and impossible to ignore.`;
+        prompt += `The thumbnail should be ${aspect_ratio || '16:9'}, visually stunning, professional, and designed to maximize click-through rate.`;
 
-        // Generate the image using the ai model
         const response: any = await ai.models.generateContent({
-            model,
-            contents: [prompt],
-            config: generationConfig,
+            model: 'gemini-2.5-flash',
+            contents: `Improve this into a short, clear AI image generation prompt. Do not add explanation. Prompt: ${prompt}`,
         });
 
-        // Check if the response is valid
-        if (!response?.candidates?.[0]?.content?.parts) {
-            throw new Error('Unexpected response');
-        }
+        const enhancedPrompt =
+            response?.text ||
+            response?.candidates?.[0]?.content?.parts?.[0]?.text ||
+            prompt;
 
-        const parts = response.candidates[0].content.parts;
+        const { width, height } = getSizeFromAspectRatio(aspect_ratio || '16:9');
 
-        let finalBuffer: Buffer | null = null;
+        const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+            enhancedPrompt
+        )}?width=${width}&height=${height}&seed=${Date.now()}&nologo=true`;
 
-        for (const part of parts) {
-            if (part.inlineData?.data) {
-                finalBuffer = Buffer.from(part.inlineData.data, 'base64');
-            }
-        }
-
-        if (!finalBuffer) {
-            throw new Error('Failed to generate image');
-        }
-
-        const base64Image = `data:image/png;base64,${finalBuffer.toString('base64')}`;
-
-        const uploadResult = await cloudinary.uploader.upload(base64Image, {
+        const uploadResult = await cloudinary.uploader.upload(pollinationsUrl, {
             resource_type: 'image',
         });
 
         thumbnail.image_url = uploadResult.secure_url;
+        thumbnail.prompt_used = enhancedPrompt;
         thumbnail.isGenerating = false;
         await thumbnail.save();
 
         res.json({ message: 'Thumbnail Generated', thumbnail });
     } catch (error: any) {
         console.log(error);
-        res.status(500).json({ message: error.message });
+
+        if (thumbnail) {
+            thumbnail.isGenerating = false;
+            await thumbnail.save();
+        }
+
+        res.status(500).json({
+            message: error.message || 'Thumbnail generation failed',
+        });
     }
 };
 
-// Controllers For Thumbnail Deletion
 export const deleteThumbnail = async (req: Request, res: Response) => {
     try {
         const { id } = req.params;
